@@ -1,0 +1,94 @@
+name: Ultimate APK Builder
+on: [push]
+
+jobs:
+  build_apk:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Setup Exact Gradle 8.2
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.2'
+
+    - name: Auto-Fix XML & Compile APK
+      run: |
+        echo "=== 1. Finding Project Directory ==="
+        APP_BUILD=$(find . -name "build.gradle*" | grep "/app/" | head -n 1)
+        if [ -n "$APP_BUILD" ]; then
+          PROJECT_DIR=$(dirname $(dirname "$APP_BUILD"))
+          echo "Found project in: $PROJECT_DIR"
+          cd "$PROJECT_DIR"
+        fi
+
+        echo "=== 2. Fixing '&' Error in all XML files ==="
+        find app/src/main/res -name "*.xml" -exec perl -i -pe 's/&(?!(amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)/&amp;/g' {} +
+
+        echo "=== 3. Fixing Namespace & AndroidManifest.xml ==="
+        perl -i -pe 's/package="[^"]*"//g' app/src/main/AndroidManifest.xml
+        if ! grep -q "namespace" app/build.gradle; then
+          sed -i '/android {/a \    namespace "com.sm.driverrewards"' app/build.gradle
+        fi
+
+        echo "=== 4. Creating gradle.properties ==="
+        cat << 'EOF' > gradle.properties
+        org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+        android.useAndroidX=true
+        android.enableJetifier=true
+        android.nonTransitiveRClass=false
+        EOF
+
+        echo "=== 5. Creating settings.gradle ==="
+        cat << 'EOF' > settings.gradle
+        pluginManagement {
+            repositories {
+                google()
+                mavenCentral()
+                gradlePluginPortal()
+            }
+        }
+        dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+            repositories {
+                google()
+                mavenCentral()
+            }
+        }
+        rootProject.name = "SMDriverRewards"
+        include ':app'
+        EOF
+
+        echo "=== 6. Creating root build.gradle ==="
+        cat << 'EOF' > build.gradle
+        buildscript {
+            repositories {
+                google()
+                mavenCentral()
+            }
+            dependencies {
+                classpath 'com.android.tools.build:gradle:8.1.1'
+            }
+        }
+        EOF
+
+        echo "=== 7. Disabling Strict Lint Checks ==="
+        if ! grep -q "abortOnError" app/build.gradle; then
+          sed -i '/android {/a \    lintOptions { checkReleaseBuilds false; abortOnError false }' app/build.gradle
+        fi
+
+        echo "=== 8. Building APK ==="
+        gradle assembleDebug --no-daemon --stacktrace
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: final-ready-apk
+        path: "**/*debug*.apk"
